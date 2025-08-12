@@ -3,12 +3,20 @@ import base64
 import zlib
 import marshal
 import dis
-from io import BytesIO, StringIO
+from io import StringIO
 from telegram import Update, InputFile
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from threading import Thread
+from flask import Flask, jsonify
 
-# Replace with your actual bot token
-BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+app = Flask(__name__)
+
+# Get bot token from Replit secrets
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+
+@app.route('/')
+def home():
+    return "Telegram Deobfuscator Bot is running!"
 
 def start(update: Update, context: CallbackContext) -> None:
     update.message.reply_text(
@@ -27,14 +35,10 @@ def extract_payload(content: str) -> str:
 
 def decode_obfuscated(payload: str) -> str:
     """Decodes the multi-layer obfuscation"""
-    # Reverse the string (common obfuscation technique)
     reversed_b64 = payload[::-1]
-    
-    # Base64 decode → zlib decompress → marshal load
     decoded_bytes = base64.b64decode(reversed_b64)
     decompressed = zlib.decompress(decoded_bytes)
     code_obj = marshal.loads(decompressed)
-    
     return decompile_code(code_obj)
 
 def decompile_code(code_obj) -> str:
@@ -45,7 +49,6 @@ def decompile_code(code_obj) -> str:
         uncompyle6.uncompyle(code_obj, out=output)
         return output.getvalue()
     except ImportError:
-        # Fallback to bytecode disassembly
         output = []
         for instr in dis.get_instructions(code_obj):
             output.append(f"{instr.opname} {instr.argrepr}")
@@ -57,25 +60,20 @@ def handle_document(update: Update, context: CallbackContext) -> None:
         update.message.reply_text("❌ Please send a .py file")
         return
 
-    # Download the file
     file = context.bot.get_file(update.message.document.file_id)
     file.download('temp.py')
     
     try:
-        # Read and process the file
         with open('temp.py', 'r', encoding='utf-8') as f:
             content = f.read()
         
         payload = extract_payload(content)
         decoded_code = decode_obfuscated(payload)
         
-        # Save as text file
-        output_filename = 'decoded_output.txt'
-        with open(output_filename, 'w', encoding='utf-8') as f:
+        with open('decoded_output.txt', 'w', encoding='utf-8') as f:
             f.write(decoded_code)
         
-        # Send back the decoded file
-        with open(output_filename, 'rb') as f:
+        with open('decoded_output.txt', 'rb') as f:
             update.message.reply_document(
                 document=InputFile(f, filename='decoded_output.txt'),
                 caption="✅ Here's the decoded output"
@@ -85,23 +83,33 @@ def handle_document(update: Update, context: CallbackContext) -> None:
         update.message.reply_text(f"❌ Error: {str(e)}")
     
     finally:
-        # Clean up temporary files
-        if os.path.exists('temp.py'):
-            os.remove('temp.py')
-        if os.path.exists(output_filename):
-            os.remove(output_filename)
+        for filename in ['temp.py', 'decoded_output.txt']:
+            if os.path.exists(filename):
+                os.remove(filename)
 
-def main() -> None:
-    """Start the bot"""
+def run_bot():
+    """Run the Telegram bot"""
     updater = Updater(BOT_TOKEN)
     dispatcher = updater.dispatcher
 
-    # Add handlers
     dispatcher.add_handler(CommandHandler("start", start))
     dispatcher.add_handler(MessageHandler(Filters.document, handle_document))
 
     updater.start_polling()
     updater.idle()
 
+def run_flask():
+    """Run the Flask web server"""
+    app.run(host='0.0.0.0', port=8080)
+
 if __name__ == '__main__':
-    main()
+    if not BOT_TOKEN:
+        print("Error: BOT_TOKEN environment variable not set!")
+        exit(1)
+    
+    # Install required packages
+    os.system('pip install python-telegram-bot uncompyle6 flask')
+    
+    # Start bot and Flask in separate threads
+    Thread(target=run_bot).start()
+    Thread(target=run_flask).start()
